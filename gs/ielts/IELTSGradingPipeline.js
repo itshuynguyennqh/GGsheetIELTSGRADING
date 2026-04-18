@@ -1,25 +1,25 @@
 /**
  * IELTS Grading Pipeline – Phase 3 & 4
  * Runs grading per row by skill: WRITING, READING, LISTENING, SPEAKING.
- * Uses GeminiService, Config, DocsApiService; 4s throttle before each Gemini call.
+ * Uses AIGateway, Config, DocsApiService; 4s throttle before each AI call.
  */
 
 var IELTSGradingPipeline = (function () {
   var THROTTLE_MS = 4000;
-  var CACHE_KEY_LAST_GEMINI = 'IELTSSkillClassifier_lastGeminiCall';
+  var CACHE_KEY_LAST_AI = 'IELTSSkillClassifier_lastAICall';
+  var COL_SUBMISSION_URL = 3; // Cột C dùng chứa link nộp bài
   var COL_STATUS = 6;
-  var COL_SUBMISSION_URL = 3;
 
-  function _throttleGeminiBeforeCall() {
+  function _throttleAIBeforeCall() {
     var cache = CacheService.getScriptCache();
-    var last = cache.get(CACHE_KEY_LAST_GEMINI);
+    var last = cache.get(CACHE_KEY_LAST_AI);
     if (last) {
       var elapsed = Date.now() - parseInt(last, 10);
       if (elapsed < THROTTLE_MS) {
         Utilities.sleep(THROTTLE_MS - elapsed);
       }
     }
-    cache.put(CACHE_KEY_LAST_GEMINI, String(Date.now()), 60);
+    cache.put(CACHE_KEY_LAST_AI, String(Date.now()), 60);
   }
 
   function _setGrading(sheet, row, value, background) {
@@ -182,64 +182,127 @@ var IELTSGradingPipeline = (function () {
     return { text: null, error: lastError };
   }
 
-  /**
-   * Call Gemini with multimodal parts (e.g. image or audio as inline_data).
-   * Uses Config.getGeminiModel() and same API key as GeminiService.
-   */
-  function _logPartsForGemini(systemPrompt, parts) {
-    var maxLog = 5000;
-    Logger.log('[Gemini] systemPrompt:\n' + (systemPrompt && systemPrompt.length > maxLog ? systemPrompt.substring(0, maxLog) + '...[truncated]' : (systemPrompt || '')));
-    (parts || []).forEach(function (p, i) {
-      if (p.text) {
-        var t = p.text.length > maxLog ? p.text.substring(0, maxLog) + '\n...[truncated]' : p.text;
-        Logger.log('[Gemini] parts[' + i + '] text (len=' + p.text.length + '):\n' + t);
-      } else if (p.inlineData) {
-        Logger.log('[Gemini] parts[' + i + '] inlineData: mimeType=' + (p.inlineData.mimeType || '') + ', dataLen=' + (p.inlineData.data ? p.inlineData.data.length : 0));
+  function _callAIWithParts(systemPrompt, parts) {
+    _throttleAIBeforeCall();
+    
+    var provider = typeof Config !== 'undefined' && Config.getActiveAIProvider ? Config.getActiveAIProvider() : 'gemini';
+    
+    if (provider === 'gemini') {
+      var model = typeof Config !== 'undefined' && Config.getGeminiModel ? Config.getGeminiModel('default') : 'gemini-3.1-flash-lite-preview';
+      var apiKey = typeof Config !== 'undefined' && Config.getGeminiApiKey ? Config.getGeminiApiKey() : null;
+      if (!apiKey && typeof GeminiService !== 'undefined' && GeminiService.getApiKey) {
+        apiKey = GeminiService.getApiKey();
       }
-    });
+      if (!apiKey) throw new Error('Gemini API key not configured');
+      
+      var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + apiKey;
+      var payload = {
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        contents: [{ role: 'user', parts: parts }],
+        generationConfig: { temperature: 0.2 }
+      };
+      
+      var res = UrlFetchApp.fetch(url, {
+        method: 'post',
+        contentType: 'application/json',
+        payload: JSON.stringify(payload),
+        muteHttpExceptions: true
+      });
+      var code = res.getResponseCode();
+      var body = res.getContentText();
+      if (code !== 200) throw new Error('Gemini API ' + code + ': ' + body);
+      var data = JSON.parse(body);
+      var textPart = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) ? data.candidates[0].content.parts[0] : null;
+      return textPart && textPart.text ? textPart.text.trim() : '';
+    } else if (provider === 'anthropic') {
+      // Anthropic does not support direct PDF/audio buffer in this format natively yet using the generic call
+      // or at least we need a specific format (base64 images).
+      // Here we will try to pass base64 image to anthropic if possible, but for audio/PDF it is tricky.
+      
+      var apiKeyAuth = typeof Config !== 'undefined' && Config.getAnthropicApiKey ? Config.getAnthropicApiKey() : null;
+      if (!apiKeyAuth) throw new Error('Anthropic API key not configured');
+      var modelAuth = typeof Config !== 'undefined' && Config.getAnthropicModel ? Config.getAnthropicModel('default') : 'claude-3-5-sonnet-20241022';
+      
+      var claudeContents = [];
+      parts.forEach(function(p) {
+        if (p.text) {
+          claudeContents.push({ type: "text", text: p.text });
+        } else if (p.inlineData) {
+           var mime = p.inlineData.mimeType;
+           if (mime.indexOf('image') !== -1) {
+               claudeContents.push({
+                  type: "image",
+                  source: {
+                      type: "base64",
+                      media_type: mime,
+                      data: p.inlineData.data
+                  }
+               });
+           } else {
+               throw new Error('Mô hình Anthropic hiện chưa hỗ trợ định dạng: ' + mime);
+           }
+        }
+      });
+      
+      var urlAuth = 'https://api.anthropic.com/v1/messages';
+      var payloadAuth = {
+        model: modelAuth,
+        max_tokens: 4096,
+        temperature: 0.2,
+        system: systemPrompt,
+        messages: [
+          {
+            role: 'user',
+            content: claudeContents
+          }
+        ]
+      };
+      
+      var resAuth = UrlFetchApp.fetch(urlAuth, {
+        method: 'post',
+        contentType: 'application/json',
+        headers: {
+          'x-api-key': apiKeyAuth,
+          'anthropic-version': '2023-06-01'
+        },
+        payload: JSON.stringify(payloadAuth),
+        muteHttpExceptions: true
+      });
+      var codeAuth = resAuth.getResponseCode();
+      var bodyAuth = resAuth.getContentText();
+      if (codeAuth !== 200) throw new Error('Anthropic API error ' + codeAuth + ': ' + bodyAuth);
+      
+      var jsonAuth = JSON.parse(bodyAuth);
+      if (!jsonAuth.content || !jsonAuth.content[0] || !jsonAuth.content[0].text) {
+        throw new Error('Anthropic API: no text in response.');
+      }
+      return jsonAuth.content[0].text || '';
+    } else {
+       throw new Error('Chưa cấu hình provider hợp lệ.');
+    }
   }
 
-  function _callGeminiWithParts(systemPrompt, parts) {
-    _throttleGeminiBeforeCall();
-    Logger.log('[Gemini] _callGeminiWithParts parts count=' + (parts ? parts.length : 0));
-    _logPartsForGemini(systemPrompt, parts);
-    var model = typeof Config !== 'undefined' && Config.getGeminiModel ? Config.getGeminiModel('default') : 'gemini-3.1-flash-lite-preview';
-    var apiKey = typeof Config !== 'undefined' && Config.getGeminiApiKey ? Config.getGeminiApiKey() : null;
-    if (!apiKey && typeof GeminiService !== 'undefined' && GeminiService.getApiKey) {
-      apiKey = GeminiService.getApiKey();
+  function _formatWritingFeedback(jsonObj) {
+    if (!jsonObj || !jsonObj.writing) return 'Không có kết quả Writing hợp lệ';
+    var w = jsonObj.writing;
+    var res = [];
+    if (w.pros && w.pros.length) {
+      res.push('Điểm sáng:\n+ ' + w.pros.join('\n+ '));
     }
-    if (!apiKey) {
-      throw new Error('Gemini API key not configured');
+    if (w.cons_task_achievement && w.cons_task_achievement.length) {
+      res.push('Lỗi Task Achievement / Mạch lạc:\n- ' + w.cons_task_achievement.join('\n- '));
     }
-    var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + apiKey;
-    var payload = {
-      systemInstruction: { parts: [{ text: systemPrompt }] },
-      contents: [{
-        role: 'user',
-        parts: parts
-      }],
-      generationConfig: { temperature: 0.2 }
-    };
-    var res = UrlFetchApp.fetch(url, {
-      method: 'post',
-      contentType: 'application/json',
-      payload: JSON.stringify(payload),
-      muteHttpExceptions: true
-    });
-    var code = res.getResponseCode();
-    var body = res.getContentText();
-    if (code !== 200) {
-      throw new Error('Gemini API ' + code + ': ' + body);
+    if (w.cons_grammar && w.cons_grammar.length) {
+      res.push('Lỗi Ngữ pháp / Từ vựng:\n- ' + w.cons_grammar.join('\n- '));
     }
-    var data = JSON.parse(body);
-    var textPart = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) ? data.candidates[0].content.parts[0] : null;
-    return textPart && textPart.text ? textPart.text.trim() : '';
+    return res.join('\n\n');
   }
 
-  function _gradeWritingByText(sheet, row, tabContent, submissionUrl) {
+  function _gradeWritingByText(sheet, row, tabContent, submissionUrl, keys) {
     var docIdForPdf = _getDocIdFromUrl(submissionUrl);
     var docResult = _getDocText(submissionUrl);
     var text = docResult ? docResult.text : null;
+    
     if (!text || !text.trim()) {
       if (_autoGoogleDocPdf() && docIdForPdf && typeof DocsApiService !== 'undefined' && DocsApiService.getGoogleDocAsPdfBlob) {
         var pdfAuto = DocsApiService.getGoogleDocAsPdfBlob(docIdForPdf);
@@ -256,13 +319,25 @@ var IELTSGradingPipeline = (function () {
       _setGrading(sheet, row, errMsg, null);
       return;
     }
-    _throttleGeminiBeforeCall();
-    var fullPrompt = typeof ConfigPrompts !== 'undefined' && ConfigPrompts.getGradingWritingPipelinePrompt
-      ? ConfigPrompts.getGradingWritingPipelinePrompt(tabContent, text)
-      : 'Chấm bài BTVN IELTS. Viết nhận xét theo đúng format (chỉ trả về nhận xét, không Band score):\n\nTask/rubric context:\n' + (tabContent || '') + '\n\nStudent writing:\n' + text;
+    
+    _throttleAIBeforeCall();
+    var fullPrompt = typeof ConfigPrompts !== 'undefined' && ConfigPrompts.getGradingStrictPrompt
+      ? ConfigPrompts.getGradingStrictPrompt(tabContent, text, keys || {})
+      : 'Chấm bài BTVN IELTS. Viết nhận xét theo đúng format JSON:\n\nTask/rubric context:\n' + (tabContent || '') + '\n\nStudent writing:\n' + text;
+      
     var feedback;
     try {
-      feedback = GeminiService.callGemini(fullPrompt);
+      feedback = AIGateway.callAI(fullPrompt);
+      var parsedData;
+      // Dọn dẹp markdown nếu API lỡ trả về (phòng hờ)
+      feedback = feedback.replace(/^```json\n?/g, '').replace(/```$/g, '').trim();
+      try {
+        parsedData = JSON.parse(feedback);
+        feedback = _formatWritingFeedback(parsedData);
+      } catch (eParse) {
+        Logger.log('[IELTS] Lỗi parse JSON Writing: ' + eParse.message + '\nRaw feedback: ' + feedback);
+        // Fallback: trả về raw text nếu không parse được
+      }
     } catch (e) {
       throw e;
     }
@@ -280,7 +355,7 @@ var IELTSGradingPipeline = (function () {
   }
 
   /**
-   * Chấm Writing với một blob (PDF hoặc ảnh) gửi Gemini multimodal.
+   * Chấm Writing với một blob (PDF hoặc ảnh) gửi AI multimodal.
    */
   function _gradeWritingByInlineBlob(sheet, row, tabContent, blob) {
     if (!blob) {
@@ -302,7 +377,7 @@ var IELTSGradingPipeline = (function () {
     ];
     var feedback;
     try {
-      feedback = _callGeminiWithParts(imageParts.systemInstruction, parts);
+      feedback = _callAIWithParts(imageParts.systemInstruction, parts);
     } catch (e) {
       throw e;
     }
@@ -314,36 +389,36 @@ var IELTSGradingPipeline = (function () {
     _gradeWritingByInlineBlob(sheet, row, tabContent, blob);
   }
 
-  function _gradeWriting(sheet, row, tabContent, submissionUrl) {
+  function _gradeWriting(sheet, row, tabContent, submissionUrl, keys) {
     if (_isGoogleDocUrl(submissionUrl)) {
       var gdocId = _getDocIdFromUrl(submissionUrl);
       if (_forceGoogleDocPdf(submissionUrl) && gdocId && typeof DocsApiService !== 'undefined' && DocsApiService.getGoogleDocAsPdfBlob) {
         var pdfFromDoc = DocsApiService.getGoogleDocAsPdfBlob(gdocId);
         if (pdfFromDoc) {
-          Logger.log('[IELTS] Pipeline: Google Doc -> PDF (force) cho Gemini');
+          Logger.log('[IELTS] Pipeline: Google Doc -> PDF (force) cho AI');
           _gradeWritingByInlineBlob(sheet, row, tabContent, pdfFromDoc);
           return;
         }
         Logger.log('[IELTS] Pipeline: export PDF thất bại, fallback đọc text');
       }
-      _gradeWritingByText(sheet, row, tabContent, submissionUrl);
+      _gradeWritingByText(sheet, row, tabContent, submissionUrl, keys);
     } else {
       _gradeWritingByImage(sheet, row, tabContent, submissionUrl);
     }
   }
 
   /**
-   * Extract answer key from tabContent (or use Gemini). Returns array of expected answers or object.
+   * Extract answer key from tabContent (or use AI). Returns array of expected answers or object.
    */
   function _getAnswerKeyFromTabContent(tabContent) {
     if (!tabContent) return [];
-    if (typeof GeminiService === 'undefined') return [];
-    _throttleGeminiBeforeCall();
+    if (typeof AIGateway === 'undefined') return [];
+    _throttleAIBeforeCall();
     var fullPrompt = typeof ConfigPrompts !== 'undefined' && ConfigPrompts.getAnswerKeyPrompt
       ? ConfigPrompts.getAnswerKeyPrompt(tabContent)
       : 'You are an IELTS expert. From the following content, extract the answer key as a JSON array of correct answers in order, e.g. ["A","B","C",...]. Reply with only the JSON array, no other text.\n\n' + tabContent;
     try {
-      var res = GeminiService.callGemini(fullPrompt);
+      var res = AIGateway.callAI(fullPrompt);
       var match = res.match(/\[[\s\S]*\]/);
       if (match) {
         return JSON.parse(match[0]);
@@ -414,8 +489,7 @@ var IELTSGradingPipeline = (function () {
   }
 
   /**
-   * Get student answers from submission URL (Doc or Sheet).
-   * @returns {{ answers: string[], reason?: string }} reason: 'ok' | 'no_doc' | 'empty_doc' | 'no_match' (Doc only)
+   * Get student answers from submission URL.
    */
   function _getStudentAnswers(submissionUrl) {
     if (_isGoogleSheetUrl(submissionUrl)) {
@@ -424,51 +498,51 @@ var IELTSGradingPipeline = (function () {
     return _getStudentAnswersFromDoc(submissionUrl);
   }
 
-  function _gradeReadingOrListening(sheet, row, tabContent, submissionUrl, skillLabel) {
-    var answerKey = _getAnswerKeyFromTabContent(tabContent);
-    var result = _getStudentAnswers(submissionUrl);
-    var studentAnswers = result.answers || [];
-    var reason = result.reason;
+  function _formatReadingListeningFeedback(jsonObj, skillLabel) {
+    if (!jsonObj) return 'Lỗi định dạng';
+    var data = skillLabel === 'Listening' ? jsonObj.listening : jsonObj.reading;
+    if (!data) return 'Không có kết quả ' + skillLabel;
+    var res = [];
+    if (data.score) res.push('Điểm: ' + data.score);
+    if (data.errors && data.errors.length) {
+      res.push('Lỗi sai:');
+      data.errors.forEach(function(err) {
+        res.push('- Câu ' + err.question + ': Chọn "' + err.student_answer + '" -> Đáp án "' + err.correct_answer + '" (' + err.advice + ')');
+      });
+    }
+    return res.join('\n');
+  }
 
-    if (studentAnswers.length === 0) {
-      var errMsg = 'Lỗi: ';
-      if (reason === 'no_doc') {
-        errMsg += 'Không đọc được link (chia sẻ Doc/Sheet cho tài khoản đang chấm với quyền Xem).';
-        if (result.error) {
-          errMsg += '\nChi tiết: ' + result.error;
-        }
-      } else if (reason === 'empty_doc' || reason === 'empty_sheet') {
-        errMsg += 'Bài làm trống (Doc/Sheet không có nội dung).';
-      } else if (reason === 'no_match') {
-        errMsg += 'Không tìm thấy đáp án. Gợi ý: mỗi dòng một đáp án (A/B/C/D hoặc 1. A, 2. B, Câu 1: C...).';
-      } else {
-        errMsg += 'Không đọc được bài làm (Doc trống hoặc không hỗ trợ).';
-      }
-      _setGrading(sheet, row, errMsg, null);
+  function _gradeReadingOrListening(sheet, row, tabContent, submissionUrl, skillLabel, keys) {
+    var docResult = _getDocText(submissionUrl);
+    var text = docResult ? docResult.text : null;
+    
+    if (!text || !text.trim()) {
+      _setGrading(sheet, row, 'Lỗi: Không đọc được nội dung Doc', null);
       return;
     }
-    var correct = 0;
-    var total = Math.max(answerKey.length, studentAnswers.length);
-    for (var i = 0; i < answerKey.length && i < studentAnswers.length; i++) {
-      if (String(answerKey[i]).toUpperCase().trim() === String(studentAnswers[i]).toUpperCase().trim()) {
-        correct++;
-      }
-    }
-    if (answerKey.length === 0) {
-      _setGrading(sheet, row, skillLabel + ': Số câu đúng ' + correct + ' / ' + studentAnswers.length + ' (chưa có đáp án)', null);
-      return;
-    }
-    _throttleGeminiBeforeCall();
-    var bandPrompt = typeof ConfigPrompts !== 'undefined' && ConfigPrompts.getBandConversionPrompt
-      ? ConfigPrompts.getBandConversionPrompt(skillLabel, correct, total)
-      : 'You are an IELTS expert. Reply only with one band number.\n\nConvert IELTS ' + skillLabel + ' raw score to approximate band. Raw: ' + correct + ' correct out of ' + total + '. Reply with only a single band number 1-9.';
-    var band = '?';
+    
+    _throttleAIBeforeCall();
+    var fullPrompt = typeof ConfigPrompts !== 'undefined' && ConfigPrompts.getGradingStrictPrompt
+      ? ConfigPrompts.getGradingStrictPrompt(tabContent, text, keys || {})
+      : 'Chấm bài BTVN IELTS. Viết nhận xét theo đúng format JSON:\n\nTask/rubric context:\n' + (tabContent || '') + '\n\nStudent answers:\n' + text;
+      
+    var feedback;
     try {
-      band = GeminiService.callGemini(bandPrompt).replace(/\D/g, '') || '?';
+      feedback = AIGateway.callAI(fullPrompt);
+      var parsedData;
+      feedback = feedback.replace(/^```json\n?/g, '').replace(/```$/g, '').trim();
+      try {
+        parsedData = JSON.parse(feedback);
+        feedback = _formatReadingListeningFeedback(parsedData, skillLabel);
+      } catch (eParse) {
+        Logger.log('[IELTS] Lỗi parse JSON Reading/Listening: ' + eParse.message + '\nRaw feedback: ' + feedback);
+      }
     } catch (e) {
-      Logger.log('[IELTS] Pipeline Band conversion: ' + e.toString());
+      Logger.log('[IELTS] Pipeline AI conversion: ' + e.toString());
+      feedback = 'Lỗi trong quá trình chấm: ' + e.message;
     }
-    _setGrading(sheet, row, skillLabel + ': Số câu đúng ' + correct + ' / ' + total + ' - Band ' + band, null);
+    _setGrading(sheet, row, skillLabel + ':\n' + feedback, null);
   }
 
   function _gradeSpeaking(sheet, row, tabContent, submissionUrl) {
@@ -492,7 +566,7 @@ var IELTSGradingPipeline = (function () {
     ];
     var feedback;
     try {
-      feedback = _callGeminiWithParts(speakingSystem, parts);
+      feedback = _callAIWithParts(speakingSystem, parts);
     } catch (e) {
       throw e;
     }
@@ -507,6 +581,7 @@ var IELTSGradingPipeline = (function () {
    * @param {string} [params.docUrlFromE2] - Optional doc URL from E2
    * @param {string} params.tabContent - Tab content (rubric, questions, answer key context)
    * @param {string} params.skill - One of WRITING, READING, LISTENING, SPEAKING
+   * @param {Object} params.keys - Contains listeningKey, readingKey, targetLocation
    * @returns {number} Count of rows graded (optional)
    */
   function run(params) {
@@ -514,6 +589,8 @@ var IELTSGradingPipeline = (function () {
     var sheet = params.sheet;
     var tabContent = params.tabContent || '';
     var skill = (params.skill || 'WRITING').toUpperCase();
+    var keys = params.keys || {};
+    
     Logger.log('[IELTS] IELTSGradingPipeline.run start rows=' + rows.length + ' skill=' + skill);
     if (!sheet || !rows.length) return 0;
 
@@ -522,21 +599,23 @@ var IELTSGradingPipeline = (function () {
       var row = rows[i];
       Logger.log('[IELTS] Pipeline grading row ' + row + ' (' + (i + 1) + '/' + rows.length + ')');
       _setGrading(sheet, row, 'Đang chấm...', '#fff3cd');
+      
       var submissionUrl = sheet.getRange(row, COL_SUBMISSION_URL).getValue();
+      
       if (!submissionUrl) {
-        _setGrading(sheet, row, 'Lỗi: Thiếu link bài nộp', null);
+        _setGrading(sheet, row, 'Lỗi: Thiếu link (cột C)', null);
         continue;
       }
       try {
         switch (skill) {
           case 'WRITING':
-            _gradeWriting(sheet, row, tabContent, submissionUrl);
+            _gradeWriting(sheet, row, tabContent, submissionUrl, keys);
             break;
           case 'READING':
-            _gradeReadingOrListening(sheet, row, tabContent, submissionUrl, 'Reading');
+            _gradeReadingOrListening(sheet, row, tabContent, submissionUrl, 'Reading', keys);
             break;
           case 'LISTENING':
-            _gradeReadingOrListening(sheet, row, tabContent, submissionUrl, 'Listening');
+            _gradeReadingOrListening(sheet, row, tabContent, submissionUrl, 'Listening', keys);
             break;
           case 'SPEAKING':
             _gradeSpeaking(sheet, row, tabContent, submissionUrl);

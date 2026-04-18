@@ -1,5 +1,5 @@
 /**
- * Config – Gemini model presets and API key.
+ * Config – AI model presets and API keys.
  */
 
 var GEMINI_MODEL_PRESETS = {
@@ -9,6 +9,23 @@ var GEMINI_MODEL_PRESETS = {
 
 var GEMINI_DEFAULT_MODEL = 'gemini-3.1-flash-lite-preview';
 
+var ANTHROPIC_MODEL_PRESETS = {
+  'claude-3-5-sonnet-20241022': 'claude-3-5-sonnet-20241022',
+  'claude-3-5-haiku-20241022': 'claude-3-5-haiku-20241022',
+  'default': 'claude-3-5-sonnet-20241022'
+};
+
+var ANTHROPIC_DEFAULT_MODEL = 'claude-3-5-sonnet-20241022';
+
+/**
+ * Script Property: ACTIVE_AI_PROVIDER
+ * - 'gemini'
+ * - 'anthropic'  (mặc định)
+ */
+function getActiveAIProvider() {
+  return (PropertiesService.getScriptProperties().getProperty('ACTIVE_AI_PROVIDER') || 'anthropic').trim().toLowerCase();
+}
+
 /**
  * @returns {string} Gemini API key from script properties.
  */
@@ -17,7 +34,7 @@ function getGeminiApiKey() {
 }
 
 /**
- * @param {string} [presetKey] Key in GEMINI_MODEL_PRESETS (e.g. 'gemini-3.1-flash-lite-preview'). Nếu bỏ trống dùng default.
+ * @param {string} [presetKey] Key in GEMINI_MODEL_PRESETS. Nếu bỏ trống dùng default.
  * @returns {string} Resolved model name for the API.
  */
 function getGeminiModel(presetKey) {
@@ -28,6 +45,27 @@ function getGeminiModel(presetKey) {
     return presetKey;
   }
   return GEMINI_MODEL_PRESETS['default'] || GEMINI_DEFAULT_MODEL;
+}
+
+/**
+ * @returns {string} Anthropic API key from script properties.
+ */
+function getAnthropicApiKey() {
+  return PropertiesService.getScriptProperties().getProperty('ANTHROPIC_API_KEY');
+}
+
+/**
+ * @param {string} [presetKey] Key in ANTHROPIC_MODEL_PRESETS. Nếu bỏ trống dùng default.
+ * @returns {string} Resolved model name for the API.
+ */
+function getAnthropicModel(presetKey) {
+  if (presetKey && ANTHROPIC_MODEL_PRESETS[presetKey]) {
+    return ANTHROPIC_MODEL_PRESETS[presetKey];
+  }
+  if (presetKey && typeof presetKey === 'string' && presetKey.length > 0) {
+    return presetKey;
+  }
+  return ANTHROPIC_MODEL_PRESETS['default'] || ANTHROPIC_DEFAULT_MODEL;
 }
 
 /**
@@ -49,9 +87,13 @@ function submissionUrlHasGradeAsPdf(url) {
 }
 
 var Config = {
+  getActiveAIProvider: getActiveAIProvider,
   getGeminiApiKey: getGeminiApiKey,
   getGeminiModel: getGeminiModel,
   GEMINI_MODEL_PRESETS: GEMINI_MODEL_PRESETS,
+  getAnthropicApiKey: getAnthropicApiKey,
+  getAnthropicModel: getAnthropicModel,
+  ANTHROPIC_MODEL_PRESETS: ANTHROPIC_MODEL_PRESETS,
   getGradeGoogleDocAsPdfMode: getGradeGoogleDocAsPdfMode,
   submissionUrlHasGradeAsPdf: submissionUrlHasGradeAsPdf
 };

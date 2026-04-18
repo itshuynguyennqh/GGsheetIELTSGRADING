@@ -18,6 +18,12 @@ function runIELTSGrading(mode) {
 
   var docId = selection.docId;
   var sheet = selection.sheet;
+  
+  // Đọc các key từ Sheet hiện tại ngay từ đầu luồng
+  var listeningKey = sheet.getRange('G2').getValue();
+  var readingKey = sheet.getRange('H2').getValue();
+  var targetLocation = sheet.getRange('I2').getValue();
+
   var sheetName = sheet.getName();
   var tabResult = DocsApiService.getTabContentBySheetName(docId, sheetName);
   if (!tabResult || !tabResult.tabContent) {
@@ -54,7 +60,12 @@ function runIELTSGrading(mode) {
     docUrlFromE2: selection.docUrlFromE2,
     tabContent: tabContent,
     skill: skill,
-    metadata: metadata
+    metadata: metadata,
+    keys: {
+      listeningKey: listeningKey,
+      readingKey: readingKey,
+      targetLocation: targetLocation
+    }
   });
 
   var totalRows = selection.rows.length;

@@ -1,5 +1,5 @@
 /**
- * Module chấm đơn giản: nội dung → Gemini → cột F.
+ * Module chấm đơn giản: nội dung → AI → cột F.
  * Không phụ thuộc Doc/Sheet/folder, chỉ cần chuỗi nội dung.
  */
 
@@ -18,56 +18,179 @@ var IELTSSimpleGrade = (function () {
   }
 
   /**
-   * Gửi nội dung cho Gemini chấm và trả về feedback.
+   * Gửi nội dung cho AI chấm và trả về feedback.
    * @param {string} content - Nội dung cần chấm
    * @param {string} [promptContext] - Gợi ý đề bài / rubric (tùy chọn)
    * @param {string} [skill] - WRITING | READING | LISTENING | SPEAKING (tùy chọn, mặc định WRITING)
+   * @param {Object} [keys] - Các keys cấu hình (listeningKey, readingKey, targetLocation)
    * @returns {string} Kết quả chấm (Band + nhận xét)
    */
-  function grade(content, promptContext, skill) {
+  function grade(content, promptContext, skill, keys) {
     skill = (skill || 'WRITING').toUpperCase();
-    var fullPrompt = typeof ConfigPrompts !== 'undefined' && ConfigPrompts.getGradingWritingPrompt
-      ? ConfigPrompts.getGradingWritingPrompt(content || '', promptContext)
-      : 'Chấm bài BTVN IELTS. Viết nhận xét theo đúng định dạng sau (chỉ trả về nhận xét, không thêm giải thích):\n\nBài làm:\n' + (content || '');
+    var isReadingOrListening = (skill === 'READING' || skill === 'LISTENING');
+    
+    var fullPrompt;
+    if (isReadingOrListening && typeof ConfigPrompts !== 'undefined' && ConfigPrompts.getGradingStrictPrompt) {
+      fullPrompt = ConfigPrompts.getGradingStrictPrompt(promptContext, content, keys || {});
+    } else if (typeof ConfigPrompts !== 'undefined' && ConfigPrompts.getGradingWritingPrompt) {
+      fullPrompt = ConfigPrompts.getGradingWritingPrompt(content || '', promptContext);
+    } else {
+      fullPrompt = 'Chấm bài BTVN IELTS. Viết nhận xét theo đúng định dạng sau (chỉ trả về nhận xét, không thêm giải thích):\n\nBài làm:\n' + (content || '');
+    }
+
     _throttle();
-    return GeminiService.callGemini(fullPrompt);
+    
+    var feedback;
+    if (typeof AIGateway !== 'undefined' && AIGateway.callAI) {
+      feedback = AIGateway.callAI(fullPrompt);
+    } else if (typeof GeminiService !== 'undefined') {
+      feedback = GeminiService.callGemini(fullPrompt);
+    } else {
+      throw new Error('Không tìm thấy AIGateway hay GeminiService');
+    }
+    
+    // Nếu là Reading/Listening dùng Strict Prompt, cố gắng parse JSON
+    if (isReadingOrListening) {
+      feedback = feedback.replace(/^```json\n?/g, '').replace(/```$/g, '').trim();
+      try {
+        var parsedData = JSON.parse(feedback);
+        var data = skill === 'LISTENING' ? parsedData.listening : parsedData.reading;
+        if (data) {
+          var res = [];
+          if (data.score) res.push('Điểm: ' + data.score);
+          if (data.errors && data.errors.length) {
+            res.push('Lỗi sai:');
+            data.errors.forEach(function(err) {
+              res.push('- Câu ' + err.question + ': Chọn "' + err.student_answer + '" -> Đáp án "' + err.correct_answer + '" (' + err.advice + ')');
+            });
+          }
+          return res.join('\n');
+        }
+      } catch (eParse) {
+        Logger.log('[IELTS SimpleGrade] Lỗi parse JSON Reading/Listening: ' + eParse.message + '\nRaw feedback: ' + feedback);
+      }
+    }
+    
+    return feedback;
   }
 
-  function _logPartsForGemini(parts) {
+  function _logPartsForAI(parts) {
     var maxLog = 5000;
     parts.forEach(function (p, i) {
       if (p.text) {
         var t = p.text.length > maxLog ? p.text.substring(0, maxLog) + '\n...[truncated ' + (p.text.length - maxLog) + ' chars]' : p.text;
-        Logger.log('[Gemini] parts[' + i + '] text (len=' + p.text.length + '):\n' + t);
+        Logger.log('[AI] parts[' + i + '] text (len=' + p.text.length + '):\n' + t);
       } else if (p.inlineData) {
-        Logger.log('[Gemini] parts[' + i + '] inlineData: mimeType=' + (p.inlineData.mimeType || '') + ', dataLen=' + (p.inlineData.data ? p.inlineData.data.length : 0));
+        Logger.log('[AI] parts[' + i + '] inlineData: mimeType=' + (p.inlineData.mimeType || '') + ', dataLen=' + (p.inlineData.data ? p.inlineData.data.length : 0));
       }
     });
   }
 
-  function _callGeminiMultimodal(parts) {
+  function _callAIMultimodal(parts) {
     _throttle();
-    Logger.log('[Gemini] multimodal parts count=' + (parts ? parts.length : 0));
-    _logPartsForGemini(parts || []);
-    var model = Config && Config.getGeminiModel ? Config.getGeminiModel('default') : 'gemini-3.1-flash-lite-preview';
-    var apiKey = Config && Config.getGeminiApiKey ? Config.getGeminiApiKey() : '';
-    if (!apiKey) throw new Error('GEMINI_API_KEY chưa được cấu hình');
-    var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + apiKey;
-    var payload = {
-      contents: [{ role: 'user', parts: parts }],
-      generationConfig: { temperature: 0.2, maxOutputTokens: 2048 }
-    };
-    var res = UrlFetchApp.fetch(url, { method: 'post', contentType: 'application/json', payload: JSON.stringify(payload), muteHttpExceptions: true });
-    var code = res.getResponseCode();
-    var body = res.getContentText();
-    if (code !== 200) throw new Error('Gemini API ' + code + ': ' + body);
-    var data = JSON.parse(body);
-    var textPart = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0]) ? data.candidates[0].content.parts[0] : null;
-    return (textPart && textPart.text) ? textPart.text.trim() : '';
+    Logger.log('[AI] multimodal parts count=' + (parts ? parts.length : 0));
+    _logPartsForAI(parts || []);
+    
+    var provider = typeof Config !== 'undefined' && Config.getActiveAIProvider ? Config.getActiveAIProvider() : 'gemini';
+    
+    if (provider === 'gemini') {
+      var model = Config && Config.getGeminiModel ? Config.getGeminiModel('default') : 'gemini-3.1-flash-lite-preview';
+      var apiKey = Config && Config.getGeminiApiKey ? Config.getGeminiApiKey() : '';
+      if (!apiKey) throw new Error('GEMINI_API_KEY chưa được cấu hình');
+      var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + apiKey;
+      var payload = {
+        contents: [{ role: 'user', parts: parts }],
+        generationConfig: { temperature: 0.2, maxOutputTokens: 2048 }
+      };
+      var res = UrlFetchApp.fetch(url, { method: 'post', contentType: 'application/json', payload: JSON.stringify(payload), muteHttpExceptions: true });
+      var code = res.getResponseCode();
+      var body = res.getContentText();
+      if (code !== 200) throw new Error('Gemini API ' + code + ': ' + body);
+      var data = JSON.parse(body);
+      var textPart = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0]) ? data.candidates[0].content.parts[0] : null;
+      return (textPart && textPart.text) ? textPart.text.trim() : '';
+    } else if (provider === 'anthropic') {
+      var apiKeyAuth = typeof Config !== 'undefined' && Config.getAnthropicApiKey ? Config.getAnthropicApiKey() : null;
+      if (!apiKeyAuth) throw new Error('Anthropic API key not configured');
+      var modelAuth = typeof Config !== 'undefined' && Config.getAnthropicModel ? Config.getAnthropicModel('default') : 'claude-3-5-sonnet-20241022';
+      
+      var claudeContents = [];
+      var systemPrompt = '';
+      
+      parts.forEach(function(p) {
+        if (p.text) {
+          // As Anthropic separates system prompts from user messages, we will treat the first text part as system prompt if it contains instructions
+          // Otherwise, we pass it as user text.
+          if (!systemPrompt && p.text.indexOf('Chấm') > -1) {
+              systemPrompt = p.text;
+          } else {
+              claudeContents.push({ type: "text", text: p.text });
+          }
+        } else if (p.inlineData) {
+           var mime = p.inlineData.mimeType;
+           if (mime.indexOf('image') !== -1) {
+               claudeContents.push({
+                  type: "image",
+                  source: {
+                      type: "base64",
+                      media_type: mime,
+                      data: p.inlineData.data
+                  }
+               });
+           } else {
+               throw new Error('Mô hình Anthropic hiện chưa hỗ trợ định dạng: ' + mime);
+           }
+        }
+      });
+      
+      if (claudeContents.length === 0) {
+          claudeContents.push({ type: "text", text: "Please grade this document." });
+      }
+      
+      var urlAuth = 'https://api.anthropic.com/v1/messages';
+      var payloadAuth = {
+        model: modelAuth,
+        max_tokens: 4096,
+        temperature: 0.2,
+        messages: [
+          {
+            role: 'user',
+            content: claudeContents
+          }
+        ]
+      };
+      
+      if (systemPrompt) {
+          payloadAuth.system = systemPrompt;
+      }
+      
+      var resAuth = UrlFetchApp.fetch(urlAuth, {
+        method: 'post',
+        contentType: 'application/json',
+        headers: {
+          'x-api-key': apiKeyAuth,
+          'anthropic-version': '2023-06-01'
+        },
+        payload: JSON.stringify(payloadAuth),
+        muteHttpExceptions: true
+      });
+      
+      var codeAuth = resAuth.getResponseCode();
+      var bodyAuth = resAuth.getContentText();
+      if (codeAuth !== 200) throw new Error('Anthropic API error ' + codeAuth + ': ' + bodyAuth);
+      
+      var jsonAuth = JSON.parse(bodyAuth);
+      if (!jsonAuth.content || !jsonAuth.content[0] || !jsonAuth.content[0].text) {
+        throw new Error('Anthropic API: no text in response.');
+      }
+      return jsonAuth.content[0].text || '';
+    } else {
+      throw new Error('Chưa hỗ trợ Multimodal cho cấu hình provider này.');
+    }
   }
 
   /**
-   * Chấm file (PDF/ảnh) gửi trực tiếp lên Gemini và ghi cột F.
+   * Chấm file (PDF/ảnh) gửi trực tiếp lên AI và ghi cột F.
    */
   function _logPdfDebugSimpleGrade(row, blobResult) {
     var pdfN = 0;
@@ -97,7 +220,7 @@ var IELTSSimpleGrade = (function () {
         ? ConfigPrompts.getGradingWritingMultimodalPrompt(ctx)
         : 'Chấm bài BTVN IELTS. Viết nhận xét theo đúng format (chỉ trả về nhận xét):\n\n' + (ctx ? 'Đề bài tham khảo:\n' + ctx : '');
       parts.push({ text: prompt });
-      var feedback = _callGeminiMultimodal(parts);
+      var feedback = _callAIMultimodal(parts);
       sheet.getRange(row, 6).setValue(feedback || 'Chưa chấm được').setBackground(null);
     } catch (e) {
       sheet.getRange(row, 6).setValue('Lỗi: ' + (e.message || String(e)).substring(0, 80)).setBackground(null);
@@ -112,12 +235,13 @@ var IELTSSimpleGrade = (function () {
    * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet - Sheet đích (mặc định active sheet)
    * @param {string} [promptContext] - Gợi ý đề (tùy chọn)
    * @param {string} [skill] - WRITING | READING | LISTENING | SPEAKING
+   * @param {Object} [keys] - Các keys cấu hình (listeningKey, readingKey, targetLocation)
    */
-  function gradeAndWrite(content, row, sheet, promptContext, skill) {
+  function gradeAndWrite(content, row, sheet, promptContext, skill, keys) {
     sheet = sheet || SpreadsheetApp.getActiveSheet();
     sheet.getRange(row, 6).setValue('Đang chấm...').setBackground('#fff3cd');
     try {
-      var feedback = grade(content, promptContext, skill);
+      var feedback = grade(content, promptContext, skill, keys);
       sheet.getRange(row, 6).setValue(feedback || 'Chưa chấm được').setBackground(null);
     } catch (e) {
       sheet.getRange(row, 6).setValue('Lỗi: ' + (e.message || String(e)).substring(0, 80)).setBackground(null);
@@ -233,7 +357,7 @@ var IELTSSimpleGrade = (function () {
             textParts.push(txt);
             Logger.log('[SimpleGrade] file ' + (fi + 1) + ' text len=' + txt.length);
           } else if (mt === MimeType.PDF || mt.indexOf('image/') === 0) {
-            Logger.log('[SimpleGrade] file ' + (fi + 1) + ' gửi trực tiếp lên Gemini');
+            Logger.log('[SimpleGrade] file ' + (fi + 1) + ' gửi trực tiếp lên AI');
             blobParts.push({ blob: DriveApp.getFileById(fileId).getBlob(), mimeType: mt });
           } else if (typeof DocsApiService !== 'undefined' && DocsApiService.isOdtMimeType && DocsApiService.isOdtMimeType(mt)) {
             Logger.log('[SimpleGrade] file ' + (fi + 1) + ' ODT -> PDF (qua Doc tạm)');
@@ -294,7 +418,7 @@ var IELTSSimpleGrade = (function () {
     if (_forcePdfForGoogleDocUrl(url)) {
       var forced = _tryGoogleDocPdfBlobs(id);
       if (forced) {
-        Logger.log('[SimpleGrade] Google Doc link -> PDF (force) cho Gemini');
+        Logger.log('[SimpleGrade] Google Doc link -> PDF (force) cho AI');
         return forced;
       }
       Logger.log('[SimpleGrade] Xuất PDF bắt buộc thất bại, thử đọc text');
@@ -344,11 +468,11 @@ var IELTSSimpleGrade = (function () {
             return txt2;
           }
           if (mime === MimeType.PDF || mime.indexOf('image/') === 0) {
-            Logger.log('[SimpleGrade] Drive: gửi file trực tiếp lên Gemini');
+            Logger.log('[SimpleGrade] Drive: gửi file trực tiếp lên AI');
             return { _blobs: true, blobs: [{ blob: file.getBlob(), mimeType: mime }], textParts: [] };
           }
           if (typeof DocsApiService !== 'undefined' && DocsApiService.isOdtMimeType && DocsApiService.isOdtMimeType(mime)) {
-            Logger.log('[SimpleGrade] Drive: ODT -> PDF cho Gemini');
+            Logger.log('[SimpleGrade] Drive: ODT -> PDF cho AI');
             var odtPdfSingle = DocsApiService.getOdtAsPdfBlobFromDriveFileId ? DocsApiService.getOdtAsPdfBlobFromDriveFileId(id) : null;
             if (odtPdfSingle) {
               return { _blobs: true, blobs: [{ blob: odtPdfSingle, mimeType: MimeType.PDF }], textParts: [] };
@@ -391,7 +515,7 @@ var IELTSSimpleGrade = (function () {
   }
 
   /**
-   * Chạy chấm đơn giản từ menu: lấy dòng đã chọn, link C, lấy nội dung → Gemini → cột F.
+   * Chạy chấm đơn giản từ menu: lấy dòng đã chọn, link C, lấy nội dung → AI → cột F.
    */
   function runFromMenu() {
     Logger.log('[SimpleGrade] runFromMenu start');
@@ -407,6 +531,18 @@ var IELTSSimpleGrade = (function () {
     var numRows = range.getNumRows();
     Logger.log('[SimpleGrade] runFromMenu: rows ' + firstRow + ' to ' + (firstRow + numRows - 1));
     var tabContext = '';
+    var skill = 'WRITING'; // Mặc định nếu không phân loại được
+    
+    // Đọc các key từ Sheet hiện tại (tương tự như Main)
+    var listeningKey = sheet.getRange('G2').getValue();
+    var readingKey = sheet.getRange('H2').getValue();
+    var targetLocation = sheet.getRange('I2').getValue();
+    var keys = {
+      listeningKey: listeningKey,
+      readingKey: readingKey,
+      targetLocation: targetLocation
+    };
+
     try {
       var e2 = sheet.getRange('E2').getValue();
       if (e2) {
@@ -438,10 +574,18 @@ var IELTSSimpleGrade = (function () {
           tabContext = e2Str;
         }
         Logger.log('[SimpleGrade] E2 đề bài len=' + tabContext.length);
+        
+        // Phân loại kỹ năng dựa vào đề bài
+        if (tabContext && typeof IELTSSkillClassifier !== 'undefined' && IELTSSkillClassifier.classify) {
+          var classified = IELTSSkillClassifier.classify(tabContext);
+          skill = classified.skill || 'WRITING';
+          Logger.log('[SimpleGrade] Classified skill: ' + skill);
+        }
       }
     } catch (e) {
       Logger.log('[SimpleGrade] E2 error: ' + e.toString());
     }
+    
     for (var r = 0; r < numRows; r++) {
       var row = firstRow + r;
       var link = sheet.getRange(row, 3).getValue();
@@ -457,7 +601,7 @@ var IELTSSimpleGrade = (function () {
       } else if (content && typeof content === 'string' && content.trim()) {
         Logger.log('[SimpleGrade][PDF debug] row ' + row + ' chuyển PDF để chấm: KHÔNG (chấm text)');
         Logger.log('[SimpleGrade] row ' + row + ' content=' + content.length + ' chars');
-        gradeAndWrite(content, row, sheet, tabContext);
+        gradeAndWrite(content, row, sheet, tabContext, skill, keys);
       } else {
         Logger.log('[SimpleGrade] row ' + row + ' FAIL: Không đọc được nội dung');
         sheet.getRange(row, 6).setValue('Lỗi: Không đọc được nội dung').setBackground(null);

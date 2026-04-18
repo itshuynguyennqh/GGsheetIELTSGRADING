@@ -3,38 +3,66 @@
  */
 
 /**
- * Nếu textRun có màu chữ khác đen (vd học sinh tô đỏ để chọn đáp án), trả về tiền tố để Gemini vẫn chấm được khi chỉ dùng text (không qua PDF).
- * Google Docs API: textRun.textStyle.foregroundColor.color.rgbColor { red, green, blue } 0..1
+ * Nếu textRun có chứa các thuộc tính định dạng (màu sắc, in đậm, in nghiêng, gạch chân),
+ * bọc văn bản đó trong các thẻ HTML tương ứng để AI (Claude/Gemini) dễ nhận diện dấu hiệu chọn bài.
  * @param {Object} textRun Docs API textRun
- * @returns {string} tiền tố rỗng hoặc "[HS_CHỌN: ...] "
+ * @returns {string} Text đã được bọc thẻ HTML (nếu có định dạng)
  */
-function _selectionHintFromTextRun(textRun) {
-  if (!textRun || !textRun.textStyle) return '';
-  var fg = textRun.textStyle.foregroundColor;
-  if (!fg || !fg.color || !fg.color.rgbColor) return '';
-  var rgb = fg.color.rgbColor;
-  var r = rgb.red != null ? Number(rgb.red) : 0;
-  var g = rgb.green != null ? Number(rgb.green) : 0;
-  var b = rgb.blue != null ? Number(rgb.blue) : 0;
-  // Mặc định / đen gần (0,0,0)
-  if (r <= 0.14 && g <= 0.14 && b <= 0.14) return '';
-  // Đỏ rõ (pattern hay gặp: chỉ đổi màu chữ đáp án)
-  if (r > g + 0.22 && r > b + 0.22 && r > 0.35) return '[HS_CHỌN: chữ đỏ] ';
-  // Xanh / cam / tím… (bất kỳ màu nổi khác đen)
-  var maxc = Math.max(r, g, b);
-  var minc = Math.min(r, g, b);
-  if (maxc - minc > 0.2 && maxc > 0.25) return '[HS_CHỌN: chữ màu] ';
-  return '';
+function _formatTextRunWithHtml(textRun) {
+  if (!textRun || !textRun.content) return '';
+  var text = textRun.content;
+  var style = textRun.textStyle;
+  if (!style) return text;
+
+  // Xử lý in đậm
+  if (style.bold) {
+    text = '<b>' + text + '</b>';
+  }
+  
+  // Xử lý in nghiêng
+  if (style.italic) {
+    text = '<i>' + text + '</i>';
+  }
+  
+  // Xử lý gạch chân
+  if (style.underline) {
+    text = '<u>' + text + '</u>';
+  }
+  
+  // Xử lý highlight (backgroundColor)
+  if (style.backgroundColor && style.backgroundColor.color && style.backgroundColor.color.rgbColor) {
+    text = '<mark>' + text + '</mark>';
+  }
+
+  // Xử lý màu chữ (foregroundColor)
+  var fg = style.foregroundColor;
+  if (fg && fg.color && fg.color.rgbColor) {
+    var rgb = fg.color.rgbColor;
+    var r = rgb.red != null ? Number(rgb.red) : 0;
+    var g = rgb.green != null ? Number(rgb.green) : 0;
+    var b = rgb.blue != null ? Number(rgb.blue) : 0;
+    
+    // Nếu màu chữ KHÔNG PHẢI màu đen/gần đen (0,0,0 -> 0.14,0.14,0.14)
+    if (!(r <= 0.14 && g <= 0.14 && b <= 0.14)) {
+      // Chuyển RGB (0-1) thành HEX để nhúng vào thẻ span
+      var rHex = Math.round(r * 255).toString(16).padStart(2, '0');
+      var gHex = Math.round(g * 255).toString(16).padStart(2, '0');
+      var bHex = Math.round(b * 255).toString(16).padStart(2, '0');
+      text = '<span style="color:#' + rHex + gHex + bHex + '">' + text + '</span>';
+    }
+  }
+
+  return text;
 }
 
 /**
- * Extracts plain text from body.content (array of StructuralElements).
+ * Extracts HTML-formatted text from body.content (array of StructuralElements).
  * Handles PARAGRAPH (elements[].textRun.content) and TABLE (tableRows[].tableCells[].content).
- * Giữ màu chữ dưới dạng tiền tố [HS_CHỌN: ...] để chấm trắc nghiệm khi HS chỉ đổi màu lựa chọn (không gõ đáp án).
+ * Giữ các định dạng dưới dạng thẻ HTML (<b>, <i>, <u>, <mark>, <span color>) để AI chấm trắc nghiệm.
  * @param {Array<Object>} content body.content from Docs API
  * @returns {string}
  */
-function _extractTextFromBodyContent(content) {
+function _extractHtmlFromBodyContent(content) {
   if (!content || !content.length) return '';
   var parts = [];
   for (var i = 0; i < content.length; i++) {
@@ -42,31 +70,40 @@ function _extractTextFromBodyContent(content) {
     if (el.paragraph) {
       var elements = el.paragraph.elements;
       if (elements) {
+        var paraText = '';
         for (var j = 0; j < elements.length; j++) {
           var run = elements[j].textRun;
-          if (run && run.content) {
-            parts.push(_selectionHintFromTextRun(run) + run.content);
+          if (run) {
+            paraText += _formatTextRunWithHtml(run);
           }
         }
+        parts.push('<p>' + paraText + '</p>');
       }
     } else if (el.table) {
       var rows = el.table.tableRows;
       if (rows) {
+        var tableHtml = '<table border="1">';
         for (var r = 0; r < rows.length; r++) {
+          tableHtml += '<tr>';
           var cells = rows[r].tableCells;
           if (cells) {
             for (var c = 0; c < cells.length; c++) {
               var cellContent = cells[c].content;
+              tableHtml += '<td>';
               if (cellContent && cellContent.length) {
-                parts.push(_extractTextFromBodyContent(cellContent));
+                tableHtml += _extractHtmlFromBodyContent(cellContent);
               }
+              tableHtml += '</td>';
             }
           }
+          tableHtml += '</tr>';
         }
+        tableHtml += '</table>';
+        parts.push(tableHtml);
       }
     }
   }
-  return parts.join('');
+  return parts.join('\n');
 }
 
 /**
@@ -87,7 +124,7 @@ function _findTabByTitle(tabs, sheetName) {
       if (!docTab) return null;
       var body = docTab.body;
       var content = body && body.content ? body.content : [];
-      var tabContent = _extractTextFromBodyContent(content);
+      var tabContent = _extractHtmlFromBodyContent(content);
       return { tabContent: tabContent, tabId: tabIdVal };
     }
     var childTabs = tab.childTabs || tab.child_tabs;
@@ -116,7 +153,7 @@ function _findTabById(tabs, tabId) {
       if (!docTab) return null;
       var body = docTab.body;
       var content = body && body.content ? body.content : [];
-      var tabContent = _extractTextFromBodyContent(content);
+      var tabContent = _extractHtmlFromBodyContent(content);
       return { tabContent: tabContent, tabId: id };
     }
     var childTabs = tab.childTabs || tab.child_tabs;
@@ -140,9 +177,9 @@ function getTabIdFromUrl(url) {
 }
 
 /**
- * Fetches a Google Doc (no tabs) and returns full body text. Use for submission links (column C).
+ * Fetches a Google Doc (no tabs) and returns full body text as HTML. Use for submission links (column C).
  * @param {string} docId Google Doc ID (from URL or plain ID).
- * @returns {string|null} Plain text of document body, or null on failure.
+ * @returns {string|null} HTML text of document body, or null on failure.
  */
 function getDocText(docId) {
   if (!docId) return null;
@@ -160,7 +197,7 @@ function getDocText(docId) {
       try {
         var doc = DocumentApp.openById(docId);
         var body = doc.getBody();
-        return body ? body.getText() : null;
+        return body ? body.getText() : null; // Lưu ý: Fallback này chỉ lấy text trơn (không html)
       } catch (e2) {
         Logger.log('[IELTS] getDocText fallback error: ' + e2.toString());
         return null;
@@ -169,7 +206,7 @@ function getDocText(docId) {
     var json = JSON.parse(response.getContentText());
     var body = json.body;
     var content = body && body.content ? body.content : [];
-    var text = _extractTextFromBodyContent(content);
+    var text = _extractHtmlFromBodyContent(content);
     Logger.log('[IELTS] getDocText docId=' + docId.substring(0, 12) + '... len=' + (text ? text.length : 0));
     return text;
   } catch (e) {
