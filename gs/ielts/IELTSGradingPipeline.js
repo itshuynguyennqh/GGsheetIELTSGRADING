@@ -22,9 +22,47 @@ var IELTSGradingPipeline = (function () {
     cache.put(CACHE_KEY_LAST_AI, String(Date.now()), 60);
   }
 
+  /**
+   * Chuyển đổi Markdown (**text**) sang dạng RichText để có thể in đậm trong Google Sheet
+   */
+  function _markdownToRichText(text) {
+    if (!text) return SpreadsheetApp.newRichTextValue().setText('').build();
+    text = String(text);
+    if (text.indexOf('**') === -1) return SpreadsheetApp.newRichTextValue().setText(text).build();
+
+    var boldRegex = /\*\*(.*?)\*\*/g;
+    var match;
+    var plainText = "";
+    var lastIndex = 0;
+    var boldIntervals = [];
+
+    while ((match = boldRegex.exec(text)) !== null) {
+      plainText += text.substring(lastIndex, match.index);
+      var boldStart = plainText.length;
+      plainText += match[1]; // Chỉ thêm text, bỏ dấu **
+      var boldEnd = plainText.length;
+      boldIntervals.push({start: boldStart, end: boldEnd});
+      lastIndex = boldRegex.lastIndex;
+    }
+    plainText += text.substring(lastIndex);
+
+    var builder = SpreadsheetApp.newRichTextValue().setText(plainText);
+    var boldStyle = SpreadsheetApp.newTextStyle().setBold(true).build();
+    for (var i = 0; i < boldIntervals.length; i++) {
+      if (boldIntervals[i].start < boldIntervals[i].end) {
+        builder.setTextStyle(boldIntervals[i].start, boldIntervals[i].end, boldStyle);
+      }
+    }
+    return builder.build();
+  }
+
   function _setGrading(sheet, row, value, background) {
     var range = sheet.getRange(row, COL_STATUS);
-    range.setValue(value);
+    if (value && typeof value === 'string' && value.indexOf('**') !== -1) {
+      range.setRichTextValue(_markdownToRichText(value));
+    } else {
+      range.setValue(value);
+    }
     range.setBackground(background == null ? null : background);
   }
 
@@ -585,6 +623,9 @@ var IELTSGradingPipeline = (function () {
    * @returns {number} Count of rows graded (optional)
    */
   function run(params) {
+    Logger.log('[IELTS] IELTSGradingPipeline đã được lưu trữ (archived). Bỏ qua.');
+    return 0;
+
     var rows = params.rows || [];
     var sheet = params.sheet;
     var tabContent = params.tabContent || '';

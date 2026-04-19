@@ -1,0 +1,18 @@
+# Clasp
+# Bắt buộc ignore .clasprc.json vì chứa thông tin xác thực (token) tài khoản Google của bạn
+.clasprc.json
+
+# Dependencies
+node_modules/
+package-lock.json
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+.DS_Store?
+Thumbs.db

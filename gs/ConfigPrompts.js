@@ -26,69 +26,67 @@ var ConfigPrompts = (function () {
         '  "listening": {\n' +
         '    "score": "Số câu đúng/Tổng",\n' +
         '    "errors": [\n' +
-        '      { "question": "1", "student_answer": "A", "correct_answer": "B", "advice": "Nghe kỹ time marker" }\n' +
+        '      { "question": "1", "student_answer": "A", "correct_answer": "B", "advice": "Ngắn gọn: sai thì, nhầm số..." }\n' +
         '    ]\n' +
         '  },\n' +
         '  "reading": {\n' +
         '    "score": "Số câu đúng/Tổng",\n' +
-        '    "errors": []\n' +
+        '    "errors": [\n' +
+        '      { "question": "2", "student_answer": "F", "correct_answer": "T", "advice": "Nhầm thông tin đoạn 2" }\n' +
+        '    ]\n' +
         '  },\n' +
         '  "writing": {\n' +
-        '    "pros": ["điểm sáng 1", "điểm sáng 2"],\n' +
-        '    "cons_task_achievement": ["lệch địa danh (nếu có)", "lỗi mạch lạc"],\n' +
+        '    "pros": [],\n' +
+        '    "cons_task_achievement": ["Lỗi 1", "Lỗi 2"],\n' +
         '    "cons_grammar": ["câu sai -> sửa thành..."]\n' +
         '  }\n' +
-        '}\n',
+        '}\n' +
+        'Lưu ý quan trọng: List "errors" của Reading/Listening chỉ bao gồm các câu sai. Phần "advice" phải CỰC KỲ NGẮN GỌN (dưới 10 chữ).',
       labelDeBai: 'Đề bài:',
       labelDapAn: 'Đáp án được cung cấp:',
       labelBaiLam: 'Bài làm:'
     },
     gradingWriting: {
-      instruction: 'Đóng vai giáo viên chấm IELTS. Quy tắc: Đối chiếu kỹ văn bản gốc/hình ảnh với bài làm. Nếu bài viết (Task 1) lệch địa danh so với đề (vd: Norbiton vs Sunnyhills), phải chỉ rõ trong lỗi Task Achievement.',
-      formatGuide: 'BẮT BUỘC đúng format, chỉ dùng keyword/cụm từ ngắn:\n' +
+      instruction: 'Đóng vai giáo viên chấm IELTS. Quy tắc: Đối chiếu kỹ văn bản gốc/hình ảnh với bài làm. Nhận xét cực kỳ NGẮN GỌN, xưng hô thân thiện (ví dụ: cô/thầy và em).',
+      formatGuide: 'BẮT BUỘC trả về định dạng dấu gạch ngang đầu dòng như mẫu dưới đây (Tuyệt đối không giải thích dài dòng, bỏ qua các phần khen ngợi chung chung):\n' +
                    'WRITING\n' +
-                   '+ [2-3 điểm sáng: từ vựng / ngữ pháp / cấu trúc]\n' +
-                   '+ [điểm tốt khác nếu có]\n' +
-                   '- [lỗi Task Achievement / Coherence / lệch thông tin đề bài]\n' +
-                   '- [lỗi grammar-vocab + sửa lỗi trực tiếp vào câu sai]\n' +
-                   '- [cách khắc phục nhanh: hành động cụ thể]\n' +
+                   '- Em nên lưu ý rằng đây là năm trong quá khứ => nên dùng thì quá khứ\n' +
+                   '- Trong bài này nhiều du khách nên phải là tourists\n' +
+                   '- câu 1 em nên sửa lại là "..."\n' +
+                   '- để mô tả thấp hơn thì em dùng "less" nhé => ...\n' +
                    'Quy tắc định dạng: Nếu thấy thẻ <b>, <u>, <i> hoặc chữ màu, coi là ĐÃ LÀM; không kết luận "không làm" khi có dấu hiệu này.',
       labelDeBai: 'Đề bài tham khảo:',
       labelBaiLam: 'Bài làm của học sinh:'
     },
     gradingWritingPipeline: {
-      instruction: 'Đóng vai giáo viên chấm IELTS Writing. Tập trung đối chiếu sự khớp nhau giữa dữ liệu đề bài và nội dung học sinh viết.',
-      formatGuide: 'BẮT BUỘC đúng format (Keyword-based):\n' +
+      instruction: 'Đóng vai giáo viên chấm IELTS Writing. Nhận xét cực kỳ NGẮN GỌN, tập trung sửa lỗi trực tiếp.',
+      formatGuide: 'BẮT BUỘC đúng format:\n' +
                    'WRITING\n' +
-                   '+ [2-3 điểm sáng: lexical resource / grammar / cấu trúc]\n' +
-                   '+ [điểm tốt khác nếu có]\n' +
-                   '- [lỗi Task Achievement / lệch đề / sai thông tin biểu đồ]\n' +
-                   '- [lỗi grammar-vocab + sửa trực tiếp]\n' +
-                   '- [fix nhanh: ưu tiên hành động cụ thể]\n' +
-                   'Lưu ý: Nếu đề giao Reading/Vocab, đối chiếu chính xác từ vựng trong đoạn văn (vd: nhầm seaweed vs unfamiliar food).',
+                   '- [Chỉ ra lỗi 1] => [Cách sửa 1]\n' +
+                   '- [Chỉ ra lỗi 2] => [Cách sửa 2]',
       labelTask: 'Task/rubric context:',
       labelStudentWriting: 'Student writing:'
     },
     gradingWritingImage: {
-      instruction: 'Đóng vai giáo viên chấm IELTS. Nhận diện hình ảnh/PDF, quét kỹ các phần học sinh tô màu, khoanh tròn hoặc viết đè.',
-      formatGuide: 'BẮT BUỘC đúng format:\n' +
+      instruction: 'Đóng vai giáo viên chấm IELTS. Nhận diện hình ảnh/PDF. Nhận xét cực kỳ NGẮN GỌN, thân thiện.',
+      formatGuide: 'BẮT BUỘC trả về định dạng gạch đầu dòng:\n' +
                    'WRITING\n' +
-                   '+ [2-3 điểm sáng]\n' +
-                   '+ [điểm tốt khác nếu có]\n' +
-                   '- [lỗi Task Achievement / Coherence / thiếu sót]\n' +
-                   '- [lỗi grammar-vocab + sửa trực tiếp]\n' +
-                   '- [cách khắc phục nhanh]\n' +
+                   '- [Chỉ ra lỗi sai 1] => [Sửa lại thành...]\n' +
+                   '- [Chỉ ra lỗi sai 2] => [Sửa lại thành...]\n' +
                    'Quy tắc cho PDF/ảnh: highlight, tô đậm, bôi đen, màu chữ (vd đỏ) trên lựa chọn là dấu hiệu học sinh đã chọn; không kết luận "không làm".',
       labelDeBai: 'Đề bài:',
       labelBaiLamImage: 'Bài làm (PDF/ảnh):',
-      systemInstruction: 'Bạn là giáo viên chấm bài. Quy trình: Quét dấu hiệu chọn (màu sắc/tô đậm) -> Đối chiếu văn bản gốc -> Xuất nhận xét ngắn gọn theo khung WRITING +/-. Sửa lỗi trực tiếp, không nói chung chung.'
+      systemInstruction: 'Bạn là giáo viên chấm bài. Quy trình: Quét dấu hiệu chọn (màu sắc/tô đậm) -> Đối chiếu văn bản gốc -> Xuất nhận xét bằng các gạch đầu dòng cực kỳ ngắn gọn (chỉ lỗi và cách sửa). Không giải thích lan man.'
     },
     gradingSpeaking: {
-      instruction: 'Chấm bài BTVN IELTS Speaking & Tổng hợp. Đối chiếu phạm vi đề giao.',
-      formatGuide: 'Định dạng: Ex X sai Y câu. THIẾU [READING/WRITING/SPEAKING] (chỉ khi đề có giao mà học sinh chưa làm). \n' +
-                   'Nếu sai bài đọc: Chỉ rõ lỗi sai thông tin (Ví dụ: Nhầm đối tượng anh/chị/em hoặc nhầm từ vựng trong đoạn văn).',
+      instruction: 'Chấm bài BTVN IELTS Speaking. Đánh giá cực kỳ NGẮN GỌN, đi thẳng vào lỗi sai và cách khắc phục, xưng hô thân thiện (em).',
+      formatGuide: 'BẮT BUỘC định dạng gạch đầu dòng:\n' +
+                   'SPEAKING\n' +
+                   '- [Lỗi phát âm/từ vựng 1] => [Sửa lại là...]\n' +
+                   '- [Lỗi ngữ pháp 2] => [Sửa lại là...]\n' +
+                   'Tuyệt đối không giải thích dài dòng.',
       labelDeBai: 'Đề bài:',
-      systemInstruction: 'Chấm bài tổng hợp. Format: Ex X sai Y câu. THIẾU [...]. Chỉ nhắc thiếu nếu đề có yêu cầu. Nếu học sinh có đánh dấu bằng màu sắc/tô đậm thì coi là đã làm bài.'
+      systemInstruction: 'Chấm bài tổng hợp. Dùng gạch đầu dòng chỉ ra lỗi và cách sửa trực tiếp, cực kỳ ngắn gọn, không lan man.'
     },
     answerKeyExtract: 'You are an IELTS expert. Extract correct answers as a JSON array ["A","B",...]. Only extract keys for exercises actually present in the handout.',
     bandConversion: 'You are an IELTS expert. Reply only with one band number (1-9) based on raw score.',
@@ -115,15 +113,33 @@ var ConfigPrompts = (function () {
            p.labelBaiLam + '\n' + (text || '');
   }
 
-  function getGradingWritingPrompt(content, promptContext) {
+  function getGradingWritingPrompt(content, promptContext, keys) {
     var p = P.gradingWriting;
     var ctx = promptContext ? '\n\n' + p.labelDeBai + '\n' + promptContext : '';
-    return p.instruction + '\n' + taskScopeFromHandout + '\n' + p.formatGuide + ctx + '\n\n' + p.labelBaiLam + '\n' + (content || '');
+    
+    var dapAn = '';
+    if (keys && (keys.listeningKey || keys.readingKey || keys.targetLocation)) {
+      dapAn = '\n\nĐáp án tham khảo:\n' +
+              (keys.listeningKey ? '- Listening: ' + keys.listeningKey + '\n' : '') +
+              (keys.readingKey ? '- Reading: ' + keys.readingKey + '\n' : '') +
+              (keys.targetLocation ? '- Target Location: ' + keys.targetLocation + '\n' : '');
+    }
+    
+    return p.instruction + '\n' + taskScopeFromHandout + '\n' + p.formatGuide + ctx + dapAn + '\n\n' + p.labelBaiLam + '\n' + (content || '');
   }
 
-  function getGradingWritingMultimodalPrompt(tabContent) {
+  function getGradingWritingMultimodalPrompt(tabContent, keys) {
     var p = P.gradingWritingImage;
-    return p.instruction + '\n' + taskScopeFromHandout + '\n' + p.formatGuide + (tabContent ? '\n\n' + p.labelDeBai + '\n' + tabContent : '');
+    
+    var dapAn = '';
+    if (keys && (keys.listeningKey || keys.readingKey || keys.targetLocation)) {
+      dapAn = '\n\nĐáp án tham khảo:\n' +
+              (keys.listeningKey ? '- Listening: ' + keys.listeningKey + '\n' : '') +
+              (keys.readingKey ? '- Reading: ' + keys.readingKey + '\n' : '') +
+              (keys.targetLocation ? '- Target Location: ' + keys.targetLocation + '\n' : '');
+    }
+    
+    return p.instruction + '\n' + taskScopeFromHandout + '\n' + p.formatGuide + (tabContent ? '\n\n' + p.labelDeBai + '\n' + tabContent : '') + dapAn;
   }
 
   function getGradingWritingPipelinePrompt(tabContent, studentText) {
@@ -131,11 +147,11 @@ var ConfigPrompts = (function () {
     return p.instruction + '\n' + taskScopeFromHandout + '\n' + p.formatGuide + '\n\n' + p.labelTask + '\n' + (tabContent || '') + '\n\n' + p.labelStudentWriting + '\n' + studentText;
   }
 
-  function getGradingWritingImageParts(tabContent) {
+  function getGradingWritingImageParts(tabContent, keys) {
     var p = P.gradingWritingImage;
     return {
       systemInstruction: p.systemInstruction,
-      textPart: getGradingWritingMultimodalPrompt(tabContent) + '\n\n' + p.labelBaiLamImage
+      textPart: getGradingWritingMultimodalPrompt(tabContent, keys) + '\n\n' + p.labelBaiLamImage
     };
   }
 

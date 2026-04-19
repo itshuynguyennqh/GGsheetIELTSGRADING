@@ -1,0 +1,13 @@
+{
+  "name": "ggsheet-ielts",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "push": "clasp push",
+    "watch": "nodemon --watch gs --ext js,gs,html,json --exec \"clasp push\""
+  },
+  "devDependencies": {
+    "@google/clasp": "^3.0.0",
+    "nodemon": "^3.0.0"
+  }
+}

@@ -33,7 +33,7 @@ var IELTSSimpleGrade = (function () {
     if (isReadingOrListening && typeof ConfigPrompts !== 'undefined' && ConfigPrompts.getGradingStrictPrompt) {
       fullPrompt = ConfigPrompts.getGradingStrictPrompt(promptContext, content, keys || {});
     } else if (typeof ConfigPrompts !== 'undefined' && ConfigPrompts.getGradingWritingPrompt) {
-      fullPrompt = ConfigPrompts.getGradingWritingPrompt(content || '', promptContext);
+      fullPrompt = ConfigPrompts.getGradingWritingPrompt(content || '', promptContext, keys || {});
     } else {
       fullPrompt = 'Chấm bài BTVN IELTS. Viết nhận xét theo đúng định dạng sau (chỉ trả về nhận xét, không thêm giải thích):\n\nBài làm:\n' + (content || '');
     }
@@ -206,7 +206,41 @@ var IELTSSimpleGrade = (function () {
     Logger.log('[SimpleGrade][PDF debug] row ' + row + ' chuyển PDF để chấm: ' + msg);
   }
 
-  function gradeWithBlobsAndWrite(blobResult, row, sheet, tabContext) {
+  /**
+   * Chuyển đổi Markdown (**text**) sang dạng RichText để có thể in đậm trong Google Sheet
+   */
+  function _markdownToRichText(text) {
+    if (!text) return SpreadsheetApp.newRichTextValue().setText('').build();
+    text = String(text);
+    if (text.indexOf('**') === -1) return SpreadsheetApp.newRichTextValue().setText(text).build();
+
+    var boldRegex = /\*\*(.*?)\*\*/g;
+    var match;
+    var plainText = "";
+    var lastIndex = 0;
+    var boldIntervals = [];
+
+    while ((match = boldRegex.exec(text)) !== null) {
+      plainText += text.substring(lastIndex, match.index);
+      var boldStart = plainText.length;
+      plainText += match[1];
+      var boldEnd = plainText.length;
+      boldIntervals.push({start: boldStart, end: boldEnd});
+      lastIndex = boldRegex.lastIndex;
+    }
+    plainText += text.substring(lastIndex);
+
+    var builder = SpreadsheetApp.newRichTextValue().setText(plainText);
+    var boldStyle = SpreadsheetApp.newTextStyle().setBold(true).build();
+    for (var i = 0; i < boldIntervals.length; i++) {
+      if (boldIntervals[i].start < boldIntervals[i].end) {
+        builder.setTextStyle(boldIntervals[i].start, boldIntervals[i].end, boldStyle);
+      }
+    }
+    return builder.build();
+  }
+
+  function gradeWithBlobsAndWrite(blobResult, row, sheet, tabContext, keys) {
     sheet = sheet || SpreadsheetApp.getActiveSheet();
     sheet.getRange(row, 6).setValue('Đang chấm...').setBackground('#fff3cd');
     _logPdfDebugSimpleGrade(row, blobResult);
@@ -217,11 +251,11 @@ var IELTSSimpleGrade = (function () {
       });
       var ctx = (tabContext || '') + (blobResult.textParts && blobResult.textParts.length ? '\n\n' + blobResult.textParts.join('\n\n') : '');
       var prompt = typeof ConfigPrompts !== 'undefined' && ConfigPrompts.getGradingWritingMultimodalPrompt
-        ? ConfigPrompts.getGradingWritingMultimodalPrompt(ctx)
+        ? ConfigPrompts.getGradingWritingMultimodalPrompt(ctx, keys || {})
         : 'Chấm bài BTVN IELTS. Viết nhận xét theo đúng format (chỉ trả về nhận xét):\n\n' + (ctx ? 'Đề bài tham khảo:\n' + ctx : '');
       parts.push({ text: prompt });
       var feedback = _callAIMultimodal(parts);
-      sheet.getRange(row, 6).setValue(feedback || 'Chưa chấm được').setBackground(null);
+      sheet.getRange(row, 6).setRichTextValue(_markdownToRichText(feedback || 'Chưa chấm được')).setBackground(null);
     } catch (e) {
       sheet.getRange(row, 6).setValue('Lỗi: ' + (e.message || String(e)).substring(0, 80)).setBackground(null);
       throw e;
@@ -242,7 +276,7 @@ var IELTSSimpleGrade = (function () {
     sheet.getRange(row, 6).setValue('Đang chấm...').setBackground('#fff3cd');
     try {
       var feedback = grade(content, promptContext, skill, keys);
-      sheet.getRange(row, 6).setValue(feedback || 'Chưa chấm được').setBackground(null);
+      sheet.getRange(row, 6).setRichTextValue(_markdownToRichText(feedback || 'Chưa chấm được')).setBackground(null);
     } catch (e) {
       sheet.getRange(row, 6).setValue('Lỗi: ' + (e.message || String(e)).substring(0, 80)).setBackground(null);
       throw e;
@@ -333,13 +367,19 @@ var IELTSSimpleGrade = (function () {
                 blobParts.push({ blob: pdfB, mimeType: MimeType.PDF });
                 Logger.log('[SimpleGrade] file ' + (fi + 1) + ' Google Doc -> PDF (force)');
               } else {
-                var docTextF = DocumentApp.openById(fileId).getBody().getText();
+              var docTextF = (typeof DocsApiService !== 'undefined' && DocsApiService.getDocText) ? DocsApiService.getDocText(fileId) : null;
+              if (!docTextF) docTextF = DocumentApp.openById(fileId).getBody().getText();
                 textParts.push(docTextF);
                 Logger.log('[SimpleGrade] file ' + (fi + 1) + ' Doc len=' + (docTextF ? docTextF.length : 0));
               }
             } else {
-              var docText = DocumentApp.openById(fileId).getBody().getText();
-              if (_autoPdfFallbackForGoogleDoc() && (!docText || !String(docText).trim())) {
+              var docObj = DocumentApp.openById(fileId);
+            var docText = (typeof DocsApiService !== 'undefined' && DocsApiService.getDocText) ? DocsApiService.getDocText(fileId) : null;
+            if (!docText) docText = docObj.getBody().getText();
+              var docImgs = docObj.getBody().getImages();
+              var hasDocImgs = docImgs && docImgs.length > 0;
+              
+              if (_autoPdfFallbackForGoogleDoc() && (!docText || !String(docText).trim()) && !hasDocImgs) {
                 var pdfAuto = typeof DocsApiService !== 'undefined' && DocsApiService.getGoogleDocAsPdfBlob ? DocsApiService.getGoogleDocAsPdfBlob(fileId) : null;
                 if (pdfAuto) {
                   blobParts.push({ blob: pdfAuto, mimeType: MimeType.PDF });
@@ -350,6 +390,13 @@ var IELTSSimpleGrade = (function () {
               } else {
                 textParts.push(docText);
                 Logger.log('[SimpleGrade] file ' + (fi + 1) + ' Doc len=' + (docText ? docText.length : 0));
+                if (hasDocImgs) {
+                  for (var imgJ = 0; imgJ < docImgs.length; imgJ++) {
+                    var ib = docImgs[imgJ].getBlob();
+                    blobParts.push({ blob: ib, mimeType: ib.getContentType() || 'image/png' });
+                  }
+                  Logger.log('[SimpleGrade] file ' + (fi + 1) + ' extracted ' + docImgs.length + ' images');
+                }
               }
             }
           } else if (mt === MimeType.PLAIN_TEXT || mt === MimeType.CSV) {
@@ -369,7 +416,8 @@ var IELTSSimpleGrade = (function () {
               try {
                 var blobOdt = DriveApp.getFileById(fileId).getBlob();
                 var tmpOdt = Drive.Files.insert({ title: 'Temp_ODT', mimeType: MimeType.GOOGLE_DOCS }, blobOdt);
-                var odtText = DocumentApp.openById(tmpOdt.id).getBody().getText();
+              var odtText = (typeof DocsApiService !== 'undefined' && DocsApiService.getDocText) ? DocsApiService.getDocText(tmpOdt.id) : null;
+              if (!odtText) odtText = DocumentApp.openById(tmpOdt.id).getBody().getText();
                 Drive.Files.remove(tmpOdt.id);
                 textParts.push(odtText);
                 Logger.log('[SimpleGrade] file ' + (fi + 1) + ' ODT text len=' + (odtText ? odtText.length : 0));
@@ -381,7 +429,8 @@ var IELTSSimpleGrade = (function () {
             Logger.log('[SimpleGrade] file ' + (fi + 1) + ' docx: convert sang Doc tạm...');
             var blobDocx = DriveApp.getFileById(fileId).getBlob();
             var tmpDoc = Drive.Files.insert({ title: 'Temp', mimeType: MimeType.GOOGLE_DOCS }, blobDocx);
-            var docxText = DocumentApp.openById(tmpDoc.id).getBody().getText();
+            var docxText = (typeof DocsApiService !== 'undefined' && DocsApiService.getDocText) ? DocsApiService.getDocText(tmpDoc.id) : null;
+            if (!docxText) docxText = DocumentApp.openById(tmpDoc.id).getBody().getText();
             Drive.Files.remove(tmpDoc.id);
             textParts.push(docxText);
             Logger.log('[SimpleGrade] file ' + (fi + 1) + ' docx len=' + (docxText ? docxText.length : 0));
@@ -424,6 +473,22 @@ var IELTSSimpleGrade = (function () {
       Logger.log('[SimpleGrade] Xuất PDF bắt buộc thất bại, thử đọc text');
     }
     var docTextResult = null;
+    
+    var docImgBlobs = [];
+    try {
+      var docForImg = DocumentApp.openById(id);
+      var imgs = docForImg.getBody().getImages();
+      for (var imgIdx = 0; imgIdx < imgs.length; imgIdx++) {
+        var b = imgs[imgIdx].getBlob();
+        docImgBlobs.push({ blob: b, mimeType: b.getContentType() || 'image/png' });
+      }
+      if (docImgBlobs.length > 0) {
+        Logger.log('[SimpleGrade] Tìm thấy ' + docImgBlobs.length + ' ảnh inline trong Google Doc');
+      }
+    } catch(eImg) {
+      Logger.log('[SimpleGrade] Lỗi trích xuất ảnh từ Doc (có thể không phải Doc gốc): ' + eImg.toString());
+    }
+
     // Nếu URL có query tab=t.xxx thì ưu tiên lấy nội dung theo tabId (Doc tabs)
     try {
       if (typeof DocsApiService !== 'undefined' && DocsApiService && DocsApiService.getTabIdFromUrl && DocsApiService.getTabContentByTabId) {
@@ -480,7 +545,8 @@ var IELTSSimpleGrade = (function () {
             Logger.log('[SimpleGrade] ODT PDF thất bại, thử text qua Doc tạm');
             try {
               var tmpOdt2 = Drive.Files.insert({ title: 'Temp_ODT', mimeType: MimeType.GOOGLE_DOCS }, file.getBlob());
-              var odtOut = DocumentApp.openById(tmpOdt2.id).getBody().getText();
+              var odtOut = (typeof DocsApiService !== 'undefined' && DocsApiService.getDocText) ? DocsApiService.getDocText(tmpOdt2.id) : null;
+              if (!odtOut) odtOut = DocumentApp.openById(tmpOdt2.id).getBody().getText();
               Drive.Files.remove(tmpOdt2.id);
               return odtOut;
             } catch (eOdt2) {
@@ -490,26 +556,41 @@ var IELTSSimpleGrade = (function () {
           if (mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || mime === 'application/msword') {
             Logger.log('[SimpleGrade] Drive: docx convert sang Doc tạm...');
             var tmpDocx = Drive.Files.insert({ title: 'Temp', mimeType: MimeType.GOOGLE_DOCS }, file.getBlob());
-            var docxOut = DocumentApp.openById(tmpDocx.id).getBody().getText();
+            var docxOut = (typeof DocsApiService !== 'undefined' && DocsApiService.getDocText) ? DocsApiService.getDocText(tmpDocx.id) : null;
+            if (!docxOut) docxOut = DocumentApp.openById(tmpDocx.id).getBody().getText();
             Drive.Files.remove(tmpDocx.id);
             return docxOut;
           }
           if (mime === MimeType.GOOGLE_DOCS || mime === 'application/vnd.google-apps.document') {
-            docTextResult = DocumentApp.openById(id).getBody().getText();
+            docTextResult = (typeof DocsApiService !== 'undefined' && DocsApiService.getDocText) ? DocsApiService.getDocText(id) : null;
+            if (!docTextResult) docTextResult = DocumentApp.openById(id).getBody().getText();
           }
         } catch (e2) {
           Logger.log('[SimpleGrade] DriveApp fallback error: ' + e2.toString());
         }
       }
     }
-    if (_autoPdfFallbackForGoogleDoc() && (!docTextResult || !String(docTextResult).trim())) {
+    if (_autoPdfFallbackForGoogleDoc() && (!docTextResult || !String(docTextResult).trim()) && docImgBlobs.length === 0) {
       var autoPdf = _tryGoogleDocPdfBlobs(id);
       if (autoPdf) {
         Logger.log('[SimpleGrade] Google Doc -> PDF (auto: không có text)');
         return autoPdf;
       }
     }
-    if (docTextResult != null) return docTextResult;
+    
+    if (docTextResult != null) {
+      if (docImgBlobs.length > 0) {
+        Logger.log('[SimpleGrade] Trả về text và ' + docImgBlobs.length + ' ảnh từ Google Doc');
+        return { _blobs: true, blobs: docImgBlobs, textParts: [docTextResult] };
+      }
+      return docTextResult;
+    }
+    
+    if (docImgBlobs.length > 0) {
+      Logger.log('[SimpleGrade] Chỉ trả về ' + docImgBlobs.length + ' ảnh từ Google Doc (không có text)');
+      return { _blobs: true, blobs: docImgBlobs, textParts: [] };
+    }
+    
     Logger.log('[SimpleGrade] _getContentFromUrl: all branches failed, return null');
     return null;
   }
@@ -597,7 +678,7 @@ var IELTSSimpleGrade = (function () {
       var content = _getContentFromUrl(link);
       if (content && typeof content === 'object' && content._blobs) {
         Logger.log('[SimpleGrade] row ' + row + ' blobs=' + content.blobs.length);
-        gradeWithBlobsAndWrite(content, row, sheet, tabContext);
+        gradeWithBlobsAndWrite(content, row, sheet, tabContext, keys);
       } else if (content && typeof content === 'string' && content.trim()) {
         Logger.log('[SimpleGrade][PDF debug] row ' + row + ' chuyển PDF để chấm: KHÔNG (chấm text)');
         Logger.log('[SimpleGrade] row ' + row + ' content=' + content.length + ' chars');
